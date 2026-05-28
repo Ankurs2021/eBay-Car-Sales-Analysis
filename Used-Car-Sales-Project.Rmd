@@ -1,0 +1,275 @@
+---
+title: "German Used Car Market: Valuation & Depreciation Analysis"
+author: "Ankur"
+date: "`r Sys.Date()`"
+output: github_document
+---
+
+## 1. Executive Summary
+This project analyzes over 50,000 used car listings from eBay Kleinanzeigen in Germany. The goal is to identify how mileage, brand positioning, and vehicle age interact to determine a vehicle's value retention.
+
+## 2. Setup
+We initialize our required libraries and dataset.
+
+```{r setup, message=FALSE, include=FALSE}
+library(tidyverse)
+library(stringr)
+library(gtExtras)
+
+# Loading data
+df <- read.csv("D:/Data/R/eBay kleinanzeigen/autos.csv", header = T)
+```
+
+## 3. Exploring & Cleaning
+We initialize our required libraries and clean the raw strings (removing currency symbols and distance metrics) to establish a structured data.
+
+```{r explore, message=FALSE, warning=FALSE, include=FALSE}
+# Exploring data
+str(df)
+summary(df)
+
+table(df$gearbox)
+table(df$notRepairedDamage)
+summary(df$price)
+summary(df$odometer)
+summary(df$yearOfRegistration)
+```
+The variables 'gearbox' and 'notRepairedDamage' have a BLANK category. It is not NA. It is not having any name.
+Price and Odometer variables are encoded as character type. There are categories with names in German.
+Year of registration looks abnormal. It starts from 1000 and goes till 9999. Might be typos. Needs correction.
+
+```{r cleaning, message=FALSE, warning=FALSE, include=FALSE}
+# Correcting variable types, converting German words to English, and restricting data from >1900 till 2019.
+df %>% 
+  mutate(price = parse_number(price), odometer = parse_number(odometer)) %>% 
+  mutate(gearbox = if_else(gearbox == "", NA, gearbox),
+         notRepairedDamage = if_else(notRepairedDamage == "", NA, notRepairedDamage)) %>% 
+  mutate(notRepairedDamage = recode(notRepairedDamage,
+                                    "ja" = "Yes",
+                                    "nein" = "No"),
+         gearbox = recode(gearbox,
+                          "manuell" = "Manual",
+                          "automatik" = "Automatic"), 
+         gearbox = replace_na(gearbox, "Unknown"),
+         notRepairedDamage = replace_na(notRepairedDamage, "Unknown")) %>% 
+  filter(yearOfRegistration >1900, yearOfRegistration < 2020) -> df_clean
+
+# Creating brand category
+German <- c("Volkswagen", "Opel", "Smart")
+Europ_econ <- c("Renault", "Peugeot", "Fiat", "Citroen", "Seat", "Skoda", "Dacia")
+Asian_econ <- c("Toyota", "Honda", "Nissan", "Mazda", "Hyundai", "Kia", "Mitsubishi", "Subaru", "Suzuki", "Daihatsu", "Daewoo")
+American <- c("Ford", "Chevrolet", "Rover", "Lancia", "Lada")
+
+# Creating price category
+High_end_luxury <- c("Porsche", "Jaguar", "Land Rover")
+Premium_exec <- c("Audi", "Bmw", "Mercedes-Benz", "Volvo")
+Premium_niche <- c("Alfa Romeo", "Saab", "Jeep", "Chrysler")
+
+# Adding different categories to the data
+df_clean %>% 
+  mutate(brand = str_to_sentence(brand)) %>% 
+  mutate(br_category = if_else(brand %in% German, "German",
+                               if_else(brand %in% Europ_econ, "European Economy",
+                                       if_else(brand %in% Asian_econ, "Asian Economy",
+                                               if_else(brand %in% American, "American", "Other")))),
+         pr_category = if_else(brand %in% High_end_luxury, "High End Luxury",
+                               if_else(brand %in% Premium_exec, "Premium Executive",
+                                       if_else(brand %in% Premium_niche, "Premium Niche", "Common")))) -> df_clean
+
+# Checking the corrected price variable for its distribution
+summary(df_clean$price) # There are outliers
+
+# Removing outliers: High outlying data is removed using IQR values and low ones by manually setting the lower value, as there are 0 values also which are not treated as outliers here
+df_clean %>% 
+  filter(price <= quantile(price, 0.75) + 1.5*IQR(price),
+         price > 100) -> df_trim
+
+# Final dataset
+head(df_trim)
+```
+There were outliers in Price variable that is removed using IQR values (for high outlying values) and lower outliers by manually setting the price greater than 100.
+
+## 4. Analysis
+# Top 6 brands
+```{r top6_analysis, message=FALSE, warning=FALSE, echo=FALSE}
+# Top 6 brands (most sold)
+df_trim %>% 
+  count(brand, sort = T) %>% 
+  head(6) %>% 
+  select(brand) -> top6
+
+top6 %>%
+  knitr::kable()
+```
+
+# Top 6 brands' cost against their mileage
+```{r top6_mileage, message=FALSE, warning=FALSE, echo=FALSE}
+# Checking the trend of the effect of mileage (Odometer) on the car's cost (Only top 6 at present)
+df_trend <- df_trim %>% 
+  filter(brand %in% top6$brand) %>% 
+  group_by(brand, odometer) %>% 
+  summarise(cost = mean(price, na.rm = T)) %>% 
+  arrange(brand, odometer) 
+
+df_trend %>% 
+  knitr::kable()
+
+```
+
+## 5. Visualization
+```{r plots, message=FALSE, warning=FALSE, echo=FALSE}
+#Visualizing the trend
+df_trend %>% 
+  ggplot(aes(x = odometer, y = cost, col = brand)) + geom_line(linewidth=1) +
+  labs(title = "Car price depriciation by brand",
+       x = "Mileage (Odometer)",
+       y = "Average price ($)",
+       color = "Brand") +
+  theme_minimal()
+
+# Price Retention by Brand (Retention rate)
+retention <- df_trim %>% 
+  filter(odometer %in% c(5000, 50000)) %>% 
+  group_by(brand) %>% 
+  summarise(start_price = mean(price[odometer == 5000], na.rm = T),
+            mid_price = mean(price[odometer == 50000], na.rm = T),
+            ret_rate = (mid_price / start_price)*100) %>% 
+  arrange(-ret_rate) %>% 
+  head(10) %>% 
+  ggplot(aes(x = reorder(brand, ret_rate), y = ret_rate, fill = brand)) + geom_bar(stat = 'identity') +
+  coord_flip() +
+  geom_text(aes(label = paste0(round(ret_rate,1),"%")), position = position_dodge(width = 0.5), hjust = -0.05, size = 2) +
+  labs(title = "Cost retention of cars after 50K kms",
+       subtitle = "Compared to 5K kms",
+       x = "",
+       y = "Retention rate (%)") +
+theme_minimal() +
+  theme(legend.position = "",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_blank(),
+        plot.title = element_text(face = 'bold', size = 18),
+        axis.text.y = element_text(size = 10))
+
+print(retention)
+
+# Retention by Brand category
+retention2 <- df_trim %>% 
+  filter(odometer %in% c(5000, 50000)) %>% 
+  group_by(br_category) %>% 
+  summarise(start_price = mean(price[odometer == 5000], na.rm = T),
+            mid_price = mean(price[odometer == 50000], na.rm = T),
+            ret_rate = (mid_price / start_price)*100) %>% 
+  arrange(-ret_rate) %>% 
+  head(10) %>% 
+  ggplot(aes(x = reorder(br_category, ret_rate), y = ret_rate, fill = br_category)) + geom_bar(stat = 'identity') +
+  coord_flip() +
+  geom_text(aes(label = paste0(round(ret_rate,1),"%")), position = position_dodge(width = 0.5), hjust = -0.15, size = 2) +
+  labs(title = "Cost retention of cars after 50K kms",
+       subtitle = "Compared to 5K kms",
+       x = "Brand category",
+       y = "Retention rate (%)") +
+  theme_minimal() +
+  theme(legend.position = "",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_blank(),
+        plot.title = element_text(face = 'bold', size = 18),
+        axis.text.y = element_text(size = 10))
+
+retention2 # German cars retain most value
+
+# Retention by Price category
+retention3 <- df_trim %>% 
+  filter(odometer %in% c(5000, 50000)) %>% 
+  group_by(pr_category) %>% 
+  summarise(start_price = mean(price[odometer == 5000], na.rm = T),
+            mid_price = mean(price[odometer == 50000], na.rm = T),
+            ret_rate = (mid_price / start_price)*100) %>% 
+  arrange(-ret_rate) %>% 
+  head(10) %>% 
+  ggplot(aes(x = reorder(pr_category, ret_rate), y = ret_rate, fill = pr_category)) + geom_bar(stat = 'identity') +
+  coord_flip() +
+  geom_text(aes(label = paste0(round(ret_rate,1),"%")), position = position_dodge(width = 0.5), hjust = -0.15, size = 2) +
+  labs(title = "Cost retention of cars after 50K kms",
+       subtitle = "Compared to 5K kms",
+       x = "Price category",
+       y = "Retention rate (%)") +
+  theme_minimal() +
+  theme(legend.position = "",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_blank(),
+        plot.title = element_text(face = 'bold', size = 18),
+        axis.text.y = element_text(size = 10))
+
+retention3
+
+# Comparing against the Mean Retention Rate
+df_trim %>% 
+  filter(odometer %in% c(5000, 50000)) %>% 
+  mutate(overall = mean(price)) %>% 
+  mutate(ret = (overall / mean(price[odometer == 5000], na.rm = T))*100) %>% 
+  group_by(pr_category) %>% 
+  #mutate(overall = mean(price)) %>% 
+  summarise(start_price = mean(price[odometer == 5000], na.rm = T),
+            mid_price = mean(price[odometer == 50000], na.rm = T),
+            ret_rate = (mid_price / start_price)*100,
+            avg = ret) %>% 
+  arrange(-ret_rate) %>% 
+  head(10) %>% 
+  ggplot(aes(x = reorder(pr_category, ret_rate), y = ret_rate, fill = pr_category)) + geom_bar(stat = 'identity') +
+  coord_flip() +
+  geom_hline(aes(yintercept = avg), linetype = 'dashed', color = "gray", size = 1) +
+  geom_text(aes(label = paste0(round(ret_rate,1),"%")), position = position_dodge(width = 0.5), hjust = -0.15, size = 2) +
+  labs(title = "Cost retention of cars after 50K kms",
+       subtitle = "Compared to 5K kms",
+       x = "Price category",
+       y = "Retention rate (%)",
+       caption = "Gray line indicates the overall retention rate (171%) from 5K to 50K driven cars") +
+  theme_minimal() +
+  theme(legend.position = "",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_blank(),
+        plot.title = element_text(face = 'bold', size = 18),
+        axis.text.y = element_text(size = 10))
+
+  
+# Price retention by selected car brands across years (2000 & later)
+df_trim %>%
+  filter(brand %in% c("Volkswagen", "Opel", "Bmw", "Audi")) %>%
+  filter(yearOfRegistration >= 2000) %>%
+  ggplot(aes(x = factor(yearOfRegistration), y = price, fill = brand)) +
+  geom_boxplot(outlier.shape = NA) +
+  labs(title = "Price Evolution by Registration Year", x = "Year", y = "Price") +
+  theme_minimal() +
+  coord_cartesian(ylim = c(0, 20000)) + # Focus on the bulk of the data
+  theme(axis.text.x = element_text(angle = 90))
+
+# Price retention by car brand categories across years (2000 & later)
+df_trim %>%
+  filter(yearOfRegistration >= 2000) %>%
+  ggplot(aes(x = factor(yearOfRegistration), y = price, fill = br_category)) +
+  geom_boxplot(outlier.shape = NA) +
+  labs(title = "Price Evolution by Registration Year", subtitle = "by Brand category", x = "Year", y = "Price", fill = "Brand Category") +
+  theme_minimal() +
+  coord_cartesian(ylim = c(0, 20000)) + # Focus on the bulk of the data
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+## Summary
+The analysis of top 6 brands shows that the cost of car depreciates faster after 50,000 kms. The price retention is at peak at nearby 50,000 kms. Audi is the brand that shows highest price retention among all the top 6 brands.
+
+In the entire list of over 50K cars, Chrysler retains highest value after running for 50K kms. Among the top 10 cars retaining most of their prices after 50K kms run, cars listed in top 6 most sold brands are Audi, Mercedes, and Volksvagen.
+
+German cars retain most of their cost, and European economy cars the least.
+
+Premium niche cars are expensive and also the have the highest price retention rate. Surprisingly, the high end luxury cars depreciate the most.
+
+## Conclusion
+**The 50,000 KM Valuation Cliff:** Across all major market segments, vehicle pricing experiences a sharp, non-linear depreciation acceleration once mileage crosses the **50,000 km** threshold. This represents the optimal liquidation window for consumers looking to exit their vehicles with maximum value retention.
+
+**Premium Brand Resilience:** Within our high-volume tier (Top 6 Brands), **Audi** demonstrates the most robust price insulation, consistently holding a premium valuation across both registration year increments and high-mileage bands compared to direct competitors like BMW and Mercedes-Benz.
+
+**Macro-Category Dynamics:** While niche segments like *Chrysler* show high isolated peaks at specific milestones, the **German Mainstream** tier provides the most reliable statistical stability over time, making them the safest asset class for secondary market dealerships managing inventory turnover.
